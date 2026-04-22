@@ -1,4 +1,4 @@
-# WaylandSwitcher
+# Wayland Switcher — let Linux be beautiful!
 Keyboard layout switcher and input corrector for Linux on Wayland
 
 
