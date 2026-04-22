@@ -60,8 +60,25 @@ sudo wayland-switcher -i
 увидите сообщение:
 
 ```
-WaylandSwitcher daemon successfully installed, version: 0.5
+WaylandSwitcher daemon successfully installed, version: 0.x
 ```
 
+---
+
+## Настройка
+
+Запустите интерактивный конфигуратор:
+
+```bash
+sudo wayland-switcher -c
+```
+
+Конфигуратор последовательно попросит:
+
+1. **Нажать Enter** — для автоматического определения клавиатуры среди устройств `/dev/input/event*`
+2. **Нажать клавишу (или комбинацию)** переключения раскладки в вашей системе
+3. **Нажать клавишу** для исправления ввода (по умолчанию рекомендуется Pause/Break)
+
+---
 
 
