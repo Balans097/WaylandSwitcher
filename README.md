@@ -2,7 +2,10 @@
 Keyboard layout switcher and input corrector for Linux on Wayland
 
 
-<video src="test/screencast.mp4" controls width="640" preload="metadata"></video>
+<details open>
+  <summary><h3>🎬 Демонстрация работы</h3></summary>
+  <video src="docs/demo.mp4" controls width="640" preload="metadata"></video>
+</details>
 
 
 # Установка Wayland Switcher на Fedora Linux (GNOME, Wayland)
