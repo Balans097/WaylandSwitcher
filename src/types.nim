@@ -14,7 +14,7 @@ import posix
 
 # ── Пути и версия ─────────────────────────────────────────────────────────────
 const
-  VERSION*           = "0.11"
+  VERSION*           = "1.2"
   SYSTEMD_UNIT_FILE* = "/lib/systemd/system/wayland-switcher.service"
   INSTALL_BIN_PATH*  = "/usr/local/bin/wayland-switcher"
   CONFIG_FILE*       = "/etc/wayland-switcher/default.conf"
@@ -60,6 +60,7 @@ const
   KEY_SPACE*:     uint16 = 57
   KEY_ENTER*:     uint16 = 28
   KEY_KPENTER*:   uint16 = 96
+  KEY_A*:         uint16 = 30
   KEY_C*:         uint16 = 46
   KEY_V*:         uint16 = 47
   KEY_DELETE*:    uint16 = 111
