@@ -101,12 +101,13 @@ proc loadConfig*(path: string): AppConfig =
       "Конфиг не найден: " & path & ". Запустите 'wayland-switcher -c' для настройки.")
 
   let
-    kbdPath = readIniKey(path, "keyboard")
-    mPath   = readIniKey(path, "mouse")
-    lskRaw  = readIniKey(path, "layout-switch-key", "")
-    rplRaw  = readIniKey(path, "replace-key",       "")
-    revRaw  = readIniKey(path, "reverse-mode",      "false")
-    delRaw  = readIniKey(path, "delay",             "10")
+    kbdPath  = readIniKey(path, "keyboard")
+    mPath    = readIniKey(path, "mouse")
+    lskRaw   = readIniKey(path, "layout-switch-key", "")
+    rplRaw   = readIniKey(path, "replace-key",       "")
+    revRaw   = readIniKey(path, "reverse-mode",      "false")
+    delRaw   = readIniKey(path, "delay",             "10")
+    clipRaw  = readIniKey(path, "clipboard-tool",    "auto")
 
   if kbdPath == "":
     raise newException(ConfigError, "Отсутствует параметр 'keyboard' в конфиге.")
@@ -136,6 +137,13 @@ proc loadConfig*(path: string): AppConfig =
 
   let reverseMode = toLowerAscii(strip(revRaw)) == "true"
 
+  let clipTool =
+    case toLowerAscii(strip(clipRaw))
+    of "wayland", "wl-clipboard", "wl": ClipWayland
+    of "xclip":                          ClipXclip
+    of "xsel":                           ClipXsel
+    else:                                ClipAuto  ## "auto" или нераспознанное значение
+
   result = AppConfig(
     kbdPath:     kbdPath,
     mousePath:   mPath,
@@ -143,7 +151,8 @@ proc loadConfig*(path: string): AppConfig =
     strKeysLs:   strKeys,
     keyRpl:      keyRpl,
     reverseMode: reverseMode,
-    delayMs:     delayMs)
+    delayMs:     delayMs,
+    clipTool:    clipTool)
 
 # ── Запись конфигурации ───────────────────────────────────────────────────────
 
@@ -200,13 +209,28 @@ reverse-mode=$5
 # delay=10
 
 delay=$6
+
+
+# Инструмент буфера обмена для коррекции выделенного текста.
+# Значения: auto, wayland (wl-clipboard), xclip, xsel.
+# auto — автоопределение: wl-paste → xclip → xsel.
+# Используется при нажатии <replace-key> с активным выделением текста.
+# По умолчанию: auto.
+# clipboard-tool=auto
+
+clipboard-tool=$7
 """.strip() % [
     cfg.kbdPath,
     cfg.mousePath,
     cfg.strKeysLs,
     $cfg.keyRpl,
     (if cfg.reverseMode: "true" else: "false"),
-    $cfg.delayMs]
+    $cfg.delayMs,
+    (case cfg.clipTool
+     of ClipWayland: "wayland"
+     of ClipXclip:   "xclip"
+     of ClipXsel:    "xsel"
+     of ClipAuto:    "auto")]
   writeFile(CONFIG_FILE, cfgText & "\n")
 
 # ── Поток определения клавиатуры ─────────────────────────────────────────────
@@ -249,7 +273,8 @@ proc runConfig*() =
   var partial = AppConfig(
     mousePath:   "/dev/input/mice",
     reverseMode: false,
-    delayMs:     10)
+    delayMs:     10,
+    clipTool:    ClipAuto)
   if fileExists(CONFIG_FILE):
     logMsg(false, "Читаем существующий конфиг...", stdOnly = true)
     try:
@@ -257,6 +282,7 @@ proc runConfig*() =
       partial.mousePath   = existing.mousePath
       partial.reverseMode = existing.reverseMode
       partial.delayMs     = existing.delayMs
+      partial.clipTool    = existing.clipTool
     except ConfigError:
       discard  # конфиг повреждён — продолжаем с дефолтами
 
@@ -398,7 +424,8 @@ proc runConfig*() =
     strKeysLs:   strKeysLs,
     keyRpl:      keyRpl,
     reverseMode: partial.reverseMode,
-    delayMs:     partial.delayMs)
+    delayMs:     partial.delayMs,
+    clipTool:    partial.clipTool)
   try:
     saveConfig(cfg)
     logMsg(false, "Конфигурация сохранена.")
@@ -468,3 +495,130 @@ proc runUninstall*() =
              ". Нужны права root?")
   else:
     logMsg(true, "Нечего удалять: unit-файл не найден: " & SYSTEMD_UNIT_FILE)
+
+proc c_rename(oldpath, newpath: cstring): cint
+    {.importc: "rename", header: "<stdio.h>".}
+
+proc runReinstall*() =
+  ## Переустанавливает бинарник WaylandSwitcher без потери конфигурации.
+  ##
+  ## Сценарий:
+  ##   1. Проверка root.
+  ##   2. Остановка службы systemd (если активна).
+  ##   3. Атомарная замена бинарника через tmpPath → rename().
+  ##   4. Установка прав 0755, chown root:root.
+  ##   5. Обновление systemd-юнита (ExecStart → INSTALL_BIN_PATH).
+  ##   6. daemon-reload + restart (если служба была активна).
+  ##   7. Откат из резервной копии при любой ошибке.
+  logMsg(false, "Переустановка WaylandSwitcher v" & VERSION & "...")
+
+  if getuid() != 0:
+    logMsg(true, "Переустановка требует прав root. Запустите через sudo.")
+    quit(1)
+
+  let srcPath = getAppFilename()
+  let dstPath = INSTALL_BIN_PATH
+  let tmpPath = dstPath & ".new"
+  let bakPath = dstPath & ".bak"
+
+  logMsg(false, "  исходный файл : " & srcPath)
+  logMsg(false, "  целевой путь  : " & dstPath)
+
+  # ── Шаг 2: останавливаем службу ──────────────────────────────────────────
+  let wasActive = execShellCmd("systemctl is-active --quiet wayland-switcher") == 0
+  if wasActive:
+    logMsg(false, "Остановка службы...")
+    let rc = execShellCmd("systemctl stop wayland-switcher")
+    if rc != 0:
+      logMsg(false, "Предупреждение: stop вернул код " & $rc & ". Продолжаем.")
+    else:
+      logMsg(false, "Служба остановлена.")
+
+  # ── Шаг 3: резервная копия + атомарное копирование ───────────────────────
+  if fileExists(dstPath):
+    try:
+      copyFile(dstPath, bakPath)
+      logMsg(false, "Резервная копия: " & bakPath)
+    except CatchableError as e:
+      logMsg(true, "Не удалось создать резервную копию: " & e.msg); quit(1)
+
+  try:
+    copyFile(srcPath, tmpPath)
+  except CatchableError as e:
+    logMsg(true, "Ошибка копирования бинарника: " & e.msg)
+    try: removeFile(tmpPath) except CatchableError: discard
+    quit(1)
+
+  # ── Шаг 4: права и владелец ──────────────────────────────────────────────
+  try:
+    setFilePermissions(tmpPath, {fpUserExec, fpUserWrite, fpUserRead,
+                                  fpGroupExec, fpGroupRead,
+                                  fpOthersExec, fpOthersRead})
+  except CatchableError as e:
+    logMsg(true, "Ошибка установки прав: " & e.msg)
+    try: removeFile(tmpPath) except CatchableError: discard
+    quit(1)
+
+  if chown(cstring(tmpPath), Uid(0), Gid(0)) != 0:
+    logMsg(false, "Предупреждение: chown root:root не удался: " & $strerror(errno))
+
+  # rename() — атомарная замена на том же разделе
+  if c_rename(cstring(tmpPath), cstring(dstPath)) != 0:
+    logMsg(true, "Ошибка rename: " & $strerror(errno))
+    try: removeFile(tmpPath) except CatchableError: discard
+    if fileExists(bakPath):
+      logMsg(false, "Откат из резервной копии...")
+      try: copyFile(bakPath, dstPath); logMsg(false, "Откат выполнен.")
+      except CatchableError as e: logMsg(true, "Ошибка отката: " & e.msg)
+    quit(1)
+
+  logMsg(false, "Бинарник установлен: " & dstPath)
+
+  # ── Шаг 5: обновляем systemd-юнит ────────────────────────────────────────
+  logMsg(false, "Обновление systemd-юнита...")
+  let ep = shellEscape(dstPath)
+  let unitLines = "[Unit]\n" &
+    "Description=WaylandSwitcher - keyboard layout switcher\n" &
+    "Documentation=https://github.com/Balans097/WaylandSwitcher\n" &
+    "Requires=local-fs.target\n" &
+    "After=local-fs.target\n" &
+    "StartLimitIntervalSec=10\n" &
+    "StartLimitBurst=3\n\n" &
+    "[Service]\n" &
+    "Type=simple\n" &
+    "ExecStart=" & ep & " -r\n" &
+    "Restart=on-failure\n" &
+    "RestartSec=3\n" &
+    "PrivateTmp=true\n" &
+    "ProtectSystem=strict\n" &
+    "ReadWritePaths=/etc/wayland-switcher\n" &
+    "NoNewPrivileges=true\n\n" &
+    "[Install]\n" &
+    "WantedBy=multi-user.target\n"
+
+  try:
+    writeFile(SYSTEMD_UNIT_FILE, unitLines)
+    logMsg(false, "systemd-юнит обновлён.")
+  except CatchableError as e:
+    logMsg(true, "Ошибка записи юнита: " & e.msg)
+
+  # ── Шаг 6: daemon-reload и перезапуск ────────────────────────────────────
+  discard execShellCmd("systemctl daemon-reload")
+
+  if wasActive:
+    logMsg(false, "Перезапуск службы...")
+    let rc2 = execShellCmd("systemctl start wayland-switcher")
+    if rc2 == 0:
+      logMsg(false, "Служба запущена.")
+    else:
+      logMsg(true, "Не удалось запустить службу (код " & $rc2 &
+             "). Проверьте: systemctl status wayland-switcher")
+  else:
+    logMsg(false, "Служба не была активна до переустановки.")
+    logMsg(false, "Для запуска: systemctl enable --now wayland-switcher")
+
+  # Удаляем резервную копию только при полном успехе
+  if fileExists(bakPath):
+    try: removeFile(bakPath) except CatchableError: discard
+
+  logMsg(false, "Готово. Версия: " & VERSION)
