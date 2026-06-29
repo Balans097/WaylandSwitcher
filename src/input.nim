@@ -22,8 +22,12 @@
 ##   Используется Linux uinput (/dev/uinput). Процедура openVKbd регистрирует
 ##   виртуальное устройство, emitEvents посылает туда пары [InputEvent + SYN].
 
+
+
 import posix, os, osproc, strutils, unicode, std/tables
 import types, core
+
+
 
 # ── Привязки к libc ───────────────────────────────────────────────────────────
 
@@ -341,7 +345,7 @@ proc readPrimarySelection*(tool: ClipboardTool): string =
     of ClipXsel:    "xsel --primary --output"
     of ClipAuto:    return ""
   let (outp, code) = runAsUser(env, innerCmd)
-  logMsg(false, "primary read code=" & $code & " len=" & $outp.len, stdOnly = true)
+  logMsg(false, "primary read code=" & $code & " len=" & $len(outp), stdOnly = true)
   if code == 0: outp else: ""
 
 proc readClipboard*(tool: ClipboardTool): string =
@@ -355,7 +359,7 @@ proc readClipboard*(tool: ClipboardTool): string =
     of ClipXsel:    "xsel --clipboard --output"
     of ClipAuto:    return ""
   let (outp, code) = runAsUser(env, innerCmd)
-  logMsg(false, "clipboard read code=" & $code & " len=" & $outp.len, stdOnly = true)
+  logMsg(false, "clipboard read code=" & $code & " len=" & $len(outp), stdOnly = true)
   if code == 0: outp else: ""
 
 proc writeClipboard*(tool: ClipboardTool; text: string) =
@@ -624,6 +628,12 @@ proc emitSelectionCorrection*(vfd: cint; keysLs: seq[uint16];
     if clipTool == ClipAuto: detectClipboardTool()
     else: clipTool
 
+  # Запоминаем то, что лежало в CLIPBOARD ДО вмешательства этой функции —
+  # понадобится на шаге 2, чтобы вернуть всё как было, если окажется, что
+  # реального выделения в приложении не было и Ctrl+C ничего не скопировал
+  # (см. подробное объяснение в комментарии перед шагом 2 ниже).
+  let prevClipboard = readClipboard(actualTool)
+
   var t: MyTimeVal
   discard c_clock_gettime(0, addr t)
   t.tv_usec = 0
@@ -648,6 +658,10 @@ proc emitSelectionCorrection*(vfd: cint; keysLs: seq[uint16];
   ##   то, какой символ получится при нажатии физической клавиши, а не на
   ##   то, что уже скопировано в буфер обмена. Поэтому порядок ниже —
   ##   рабочий и при этом самый простой:
+  ##     0. Пишем в CLIPBOARD заведомо уникальную метку-маркер — нужна
+  ##        на шаге 2, чтобы надёжно отличить «Ctrl+C реально скопировал
+  ##        выделение» от «Ctrl+C ничего не скопировал, в CLIPBOARD так
+  ##        и осталось то, что было записано туда ДО вызова этой функции».
   ##     1. Ctrl+C — копируем выделение в CLIPBOARD как есть, выделение
   ##        остаётся активным (Ctrl+C не снимает выделение).
   ##        Почему не PRIMARY selection (буфер, который Wayland/X11 сами
@@ -660,12 +674,32 @@ proc emitSelectionCorrection*(vfd: cint; keysLs: seq[uint16];
   ##        виртуальное устройство получает фокус ввода наравне с
   ##        физической клавиатурой.
   ##     2. Читаем CLIPBOARD — получаем исходный («неправильный») текст.
+  ##        Если там до сих пор лежит метка-маркер из шага 0 — значит,
+  ##        Ctrl+C ничего не скопировал (реального выделения на уровне
+  ##        приложения не возникло — клик пришёлся не туда, фокус успел
+  ##        уйти, приложение перехватило Ctrl+C само и т.п.) — прерываем
+  ##        коррекцию, восстанавливаем прежнее содержимое CLIPBOARD
+  ##        (prevClipboard) и ничего не вставляем (см. подробности
+  ##        в комментарии прямо перед шагом 2 ниже).
   ##     3. Переключаем системную раскладку — нужно для следующего набора
   ##        текста пользователем; на сам процесс коррекции не влияет.
   ##     4. Перекодируем текст программно (convertLayout, посимвольно по
   ##        позициям клавиш) и записываем результат в CLIPBOARD.
   ##     5. Delete — удаляем всё ещё активное выделение.
   ##     6. Ctrl+V — вставляем скорректированный текст.
+
+  # ── Шаг 0: метка-маркер в CLIPBOARD ──────────────────────────────────────
+  # Записываем заведомо уникальную строку (pid + текущее время в микро-
+  # секундах — случайное совпадение с реальным выделением пользователя
+  # исключено). Если после Ctrl+C в CLIPBOARD будет лежать ровно эта
+  # строка — значит, Ctrl+C не записал туда ничего нового, и читать
+  # «выделенный текст» дальше нельзя: это будет тот самый старый текст,
+  # скопированный пользователем когда-то раньше, который раньше по ошибке
+  # конвертировался и вставлялся обратно поверх документа.
+  let marker = "WS_MARKER_" & $getpid() & "_" & $t.tv_sec & $t.tv_usec
+  logMsg(false, "sel-correction: шаг 0 — метка-маркер в CLIPBOARD", stdOnly = true)
+  writeClipboard(actualTool, marker)
+  sleep(100)
 
   # ── Шаг 1: Ctrl+C ────────────────────────────────────────────────────────
   # Пауза перед Ctrl+C: даём compositor'у время полностью обработать
@@ -680,13 +714,26 @@ proc emitSelectionCorrection*(vfd: cint; keysLs: seq[uint16];
   sleep(400)
 
   # ── Шаг 2: читаем CLIPBOARD ──────────────────────────────────────────────
-  # ВАЖНО: раньше здесь сравнивался CLIPBOARD до и после Ctrl+C, и при
-  # совпадении коррекция прерывалась как «Ctrl+C не сработал». Эта проверка
-  # ошибочна: если пользователь выделяет и корректирует один и тот же текст
-  # повторно (или просто новый выделенный текст совпал с тем, что уже было
-  # в CLIPBOARD), содержимое буфера после Ctrl+C закономерно совпадает с
-  # тем, что было до — это успешный случай, а не сбой. Сравнение удалено;
-  # единственный надёжный признак отсутствия выделения — пустой CLIPBOARD.
+  # ИСТОРИЯ ОШИБКИ (важно, чтобы не повторить её снова):
+  #   Раньше здесь сравнивался CLIPBOARD до и после Ctrl+C, и при совпадении
+  #   коррекция прерывалась как «Ctrl+C не сработал». Эту проверку убрали,
+  #   потому что она ложно прерывала повторную коррекцию ОДНОГО И ТОГО ЖЕ
+  #   текста (когда новое выделение совпадает с тем, что уже лежало
+  #   в CLIPBOARD, — это законный случай, а не сбой).
+  #   Но вместе с проверкой убрали и единственную защиту от другого,
+  #   гораздо более частого случая: Ctrl+C не сработал ВООБЩЕ (например,
+  #   главный цикл взвёл selActive по drag мыши, а реального выделения
+  #   в приложении не возникло). Тогда readClipboard возвращал старое
+  #   содержимое буфера обмена (то, что пользователь скопировал когда-то
+  #   раньше, до запуска коррекции), оно благополучно проходило проверку
+  #   на пустую строку, конвертировалось convertLayout и вставлялось
+  #   поверх документа — внешне это выглядело как «вместо исправленного
+  #   текста после набора в неправильной раскладке появился прежний,
+  #   ранее скопированный текст».
+  #   Решение — метка-маркер из шага 0 ВМЕСТО сравнения «до/после»:
+  #   сравнение «до/после» не отличает «текст совпал случайно» от
+  #   «Ctrl+C не сработал», а уникальный маркер отличает однозначно —
+  #   совпадение с маркером возможно только если Ctrl+C ничего не записал.
   logMsg(false, "sel-correction: шаг 2 — читаем CLIPBOARD", stdOnly = true)
   var selText = readClipboard(actualTool)
   logMsg(false, "sel-correction: CLIPBOARD после Ctrl+C [" & selText & "]", stdOnly = true)
@@ -697,9 +744,21 @@ proc emitSelectionCorrection*(vfd: cint; keysLs: seq[uint16];
   # в скорректированный текст и будет виден как лишний перевод строки
   # после вставки. Внутренние переводы строк (настоящий многострочный
   # текст) не трогаем — убираем только хвостовые.
-  selText = selText.strip(leading = false, chars = {'\r', '\n'})
+  selText = strip(selText, leading = false, chars = {'\r', '\n'})
+  if selText == marker:
+    # Ctrl+C ничего не скопировал — реального выделения не было.
+    # В CLIPBOARD сейчас лежит наш собственный маркер, а не текст
+    # пользователя — возвращаем то, что было записано туда до вызова
+    # этой функции, иначе маркер навсегда подменил бы пользователю
+    # буфер обмена.
+    logMsg(false,
+      "sel-correction: в CLIPBOARD маркер — Ctrl+C не скопировал выделение, прерываем",
+      stdOnly = true)
+    writeClipboard(actualTool, prevClipboard)
+    return
   if selText == "":
     logMsg(false, "sel-correction: clipboard пуст после Ctrl+C — прерываем", stdOnly = true)
+    writeClipboard(actualTool, prevClipboard)
     return
   logMsg(false, "sel-correction: прочитано " & $len(selText) &
          " символов: [" & selText & "]", stdOnly = true)
