@@ -14,7 +14,7 @@ import posix
 
 # ── Пути и версия ─────────────────────────────────────────────────────────────
 const
-  VERSION*           = "1.3"
+  VERSION*           = "1.4"
   SYSTEMD_UNIT_FILE* = "/lib/systemd/system/wayland-switcher.service"
   INSTALL_BIN_PATH*  = "/usr/local/bin/wayland-switcher"
   CONFIG_FILE*       = "/etc/wayland-switcher/default.conf"

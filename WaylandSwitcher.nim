@@ -32,7 +32,7 @@
 ## компилятора, а не ошибка в коде. Добавьте --skipParentCfg:
 ##   nim c --skipParentCfg --threads:on -d:release WaylandSwitcher.nim
 ##
-## Версия и история изменений — см. changelog.md в корне проекта.
+## Версия и история изменений — см. changelog.md в папке docs
 ##
 ## Структура модулей:
 ##   types.nim  — общие типы, константы, утилиты
@@ -76,10 +76,15 @@ proc mouseThreadFn*(arg: pointer) {.thread.} =
   ##
   ## mouseSelActive отражает только «кнопка зажата прямо сейчас» — это
   ## отдельное от mouseSelDone состояние, используется лишь для логов.
+
+
+
+
   var
     d:            array[3, uint8]
     leftWasDown:  bool = false
     travelPx:     int  = 0   ## суммарный путь курсора за время удержания кнопки
+
 
   while not stopAndExit.load():
     let n = read(mouseFDGlobal, addr d[0], 3)
@@ -122,6 +127,7 @@ proc mouseThreadFn*(arg: pointer) {.thread.} =
       leftWasDown = leftDown
 
 
+
 # ── Обработчик сигналов ───────────────────────────────────────────────────────
 
 ## Проблема, решённая здесь:
@@ -130,6 +136,8 @@ proc mouseThreadFn*(arg: pointer) {.thread.} =
 ##   Исправление: только атомарная запись флага. Логирование — в главном цикле.
 proc sigHandler(sig: cint) {.noconv.} =
   stopAndExit.store(true)
+
+
 
 # ── Главный рабочий цикл ─────────────────────────────────────────────────────
 
