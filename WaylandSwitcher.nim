@@ -554,10 +554,12 @@ when isMainModule:
     runHelp()
   else:
     case paramStr(1)
-    of "-i", "--install":   runInstall()
-    of "-u", "--uninstall": runUninstall()
-    of "-R", "--reinstall": runReinstall()
-    of "-c", "--configure": runConfig()
+    # Интерактивные команды обслуживания: вывод должен идти в терминал,
+    # а не в syslog (daemonMode по умолчанию true).
+    of "-i", "--install":   daemonMode = false; runInstall()
+    of "-u", "--uninstall": daemonMode = false; runUninstall()
+    of "-R", "--reinstall": daemonMode = false; runReinstall()
+    of "-c", "--configure": daemonMode = false; runConfig()
     of "-r", "--run":       run()
     of "-d", "--debug":     runDebug()
     of "-o", "--old-style": runOldStyleDaemon()

@@ -165,21 +165,21 @@ proc saveConfig*(cfg: AppConfig) =
 # Конфигурационный файл WaylandSwitcher.
 
 # Путь к устройству клавиатуры.
-# Команда '~$ hwinfo --keyboard --short' выводит список устройств.
+# Команда '~$$ hwinfo --keyboard --short' выводит список устройств.
 # keyboard="/dev/input/event2"
 
 keyboard="$1"
 
 
 # Путь к устройству мыши.
-# Команда '~$ hwinfo --mouse --short' выводит список устройств.
+# Команда '~$$ hwinfo --mouse --short' выводит список устройств.
 # mouse="/dev/input/mice"
 
 mouse="$2"
 
 
 # Скан-код клавиши (или комбинации), переключающей раскладку.
-# '~$ sudo showkey' — посмотреть скан-коды.
+# '~$$ sudo showkey' — посмотреть скан-коды.
 # layout-switch-key=125
 # layout-switch-key=29+42
 
@@ -188,7 +188,7 @@ layout-switch-key=$3
 
 # Скан-код клавиши для коррекции введённого текста.
 # Комбинации не поддерживаются. По умолчанию используется PAUSE/BREAK.
-# '~$ sudo showkey' — посмотреть скан-коды.
+# '~$$ sudo showkey' — посмотреть скан-коды.
 # replace-key=119
 
 replace-key=$4
