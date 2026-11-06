@@ -23,7 +23,7 @@
 set -eu
 
 BIN_NAME="wayland-switcher"
-DST="/usr/local/bin/$BIN_NAME"          # должен совпадать с INSTALL_BIN_PATH в types.nim
+DST="/usr/local/bin/$BIN_NAME"          # путь установки бинарника
 CONF="/etc/wayland-switcher/default.conf"
 UNIT="wayland-switcher.service"
 
